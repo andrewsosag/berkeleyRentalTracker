@@ -11,6 +11,7 @@ from bs4 import BeautifulSoup
 from homeharvest import scrape_property
 import time
 from datetime import datetime, timedelta
+import urllib.parse
 
 # Initialize logging
 logging.basicConfig(level=logging.INFO)
@@ -22,6 +23,9 @@ if not firebase_admin._apps:
     firebase_admin.initialize_app(cred)
 
 db = firestore.client()
+
+def encode_url_for_firestore(url):
+    return urllib.parse.quote(url, safe='')
 
 def construct_detailed_url(original_url, street, city, state, zip_code):
     # Assuming the original URL is of the format 'https://www.realtor.com/realestateandhomes-detail/2225339747'
@@ -84,8 +88,8 @@ def delete_old_listings():
         batch = db.batch()
         for listing in old_listings:
             batch.delete(db.collection('properties').document(listing.id))
+            logging.info(f"Deleted old listing: {listing.id}")
         batch.commit()
-        logging.info(f"Deleted old listing: {listing.id}")
     except Exception as e:
         logging.error(f"Error in delete_old_listings: {e}")
 
@@ -95,7 +99,7 @@ def string_to_date(date_string):
 def retry_scrape_property(attempts=3, delay=5):
     for i in range(attempts):
         try:
-            return scrape_property(location="Berkeley, CA", listing_type="for_rent", past_days=5)
+            return scrape_property(location="Berkeley, CA", listing_type="for_rent", past_days=365)
         except Exception as e:
             logging.warning(f"Attempt {i+1} failed: {e}")
             if i < attempts - 1:
@@ -123,8 +127,10 @@ def scheduled_function(event: pubsub_fn.CloudEvent[pubsub_fn.MessagePublishedDat
     for index, row in properties.iterrows():
         original_url = row['property_url']
 
+        encoded_url = encode_url_for_firestore(original_url)
+
         # Check if the property already exists in the database
-        existing_property = db.collection('properties').document(original_url).get()
+        existing_property = db.collection('properties').document(encoded_url).get()
         if existing_property.exists:
             logging.info(f"Property already exists: {original_url}")
             continue  # Skip to the next property if this one already exists
@@ -147,4 +153,4 @@ def scheduled_function(event: pubsub_fn.CloudEvent[pubsub_fn.MessagePublishedDat
         property_data = row.to_dict()
         property_data['list_date'] = string_to_date(property_data['list_date'])
         property_data.update({'beds': beds, 'baths': baths, 'rent': rent})  # Update with scraped or default values
-        db.collection('properties').document(original_url).set(property_data)
+        db.collection('properties').document(encoded_url).set(property_data)
