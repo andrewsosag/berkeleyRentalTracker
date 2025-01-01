@@ -123,7 +123,7 @@ function displayAverageRent(rentData) {
 }
 ```
 ### Interactive Map Integration
-```
+```javascript
 /**
  * Creates and configures an interactive map showing rental prices by ZIP code.
  * Utilizes Leaflet.js for map rendering and GeoJSON for ZIP code boundaries.
