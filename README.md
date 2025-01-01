@@ -77,7 +77,20 @@ BerkeleyNest.com is a comprehensive data analytics platform analyzing the Berkel
 
 ### Market Insights Component
 ```javascript
+/**
+ * Renders a dynamic table displaying average rent prices by apartment type.
+ * Processes raw rental data and creates an HTML table with formatted pricing.
+ * 
+ * @param {Object} rentData - Object containing arrays of rent prices by apartment type
+ * @example
+ * rentData = {
+ *   'Studio': [1500, 1600, 1450],
+ *   '1': [2000, 2100, 1950],
+ *   '2': [2800, 2900, 2750]
+ * }
+ */
 function displayAverageRent(rentData) {
+  // Initialize table structure with header
   let tableContent = `<table class="table">
     <thead>
       <tr>
@@ -87,45 +100,87 @@ function displayAverageRent(rentData) {
     </thead>
     <tbody>`;
 
+  // Define display order for consistent presentation
   const order = ['Studio', '1', '2', '3'];
+  
+  // Generate table rows for each apartment type
   order.forEach(type => {
+    // Calculate average rent, handling potential null or empty data
     const averageRent = rentData[type]?.length
       ? (rentData[type].reduce((a, b) => a + b) / rentData[type].length).toFixed(2)
       : 'N/A';
+    
+    // Append formatted row with proper apartment type label
     tableContent += `<tr>
       <td>${type === 'Studio' ? 'Studio' : type + ' Bedroom'}</td>
       <td>$${averageRent}</td>
     </tr>`;
   });
 
+  // Complete table structure and update DOM
   tableContent += `</tbody></table>`;
   document.getElementById('average-rent-table').innerHTML = tableContent;
 }
 ```
 ### Interactive Map Integration
-```javascript
+```
+/**
+ * Creates and configures an interactive map showing rental prices by ZIP code.
+ * Utilizes Leaflet.js for map rendering and GeoJSON for ZIP code boundaries.
+ * 
+ * @param {Object} rentData - Object containing average rent data by ZIP code
+ * @example
+ * rentData = {
+ *   '94704': { averageRent: 2500 },
+ *   '94705': { averageRent: 2800 }
+ * }
+ */
 function createMapWithRentData(rentData) {
+  // Initialize map centered on Berkeley
   const map = L.map('mapid').setView([37.8715, -122.2730], 13);
+  
+  // Add OpenStreetMap tile layer
   L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
     maxZoom: 19
   }).addTo(map);
 
+  // Add GeoJSON layer with ZIP code boundaries
   L.geoJson(zipCodeBoundaries, {
+    // Style each ZIP code region based on average rent
     style: feature => ({
       color: "#000",
       weight: 2,
       fillColor: getColor(rentData[feature.properties.ZIP_CODE]?.averageRent || 0),
       fillOpacity: 0.7
     }),
+    // Add interactive popups showing ZIP code data
     onEachFeature: (feature, layer) => {
       const zipCode = feature.properties.ZIP_CODE;
       const avgRent = rentData[zipCode]?.averageRent || "Data not available";
+      
+      // Create formatted popup content
       layer.bindPopup(
         `<strong>ZIP Code:</strong> ${zipCode}<br>
          <strong>Average Rent:</strong> $${avgRent}`
       );
     }
   }).addTo(map);
+}
+
+/**
+ * Determines fill color for ZIP code regions based on average rent.
+ * Implements a gradient scale from green (lower rent) to red (higher rent).
+ * 
+ * @param {number} rentAmount - Average rent for the ZIP code
+ * @returns {string} - Hex color code for the region
+ */
+function getColor(rentAmount) {
+  // Color scale thresholds
+  return rentAmount > 3000 ? '#bd0026' :
+         rentAmount > 2500 ? '#f03b20' :
+         rentAmount > 2000 ? '#fd8d3c' :
+         rentAmount > 1500 ? '#feb24c' :
+                            '#fed976';
 }
 ```
 
