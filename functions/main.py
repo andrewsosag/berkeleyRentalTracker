@@ -12,12 +12,14 @@ from homeharvest import scrape_property
 import time
 from datetime import datetime, timedelta
 import urllib.parse
+from ml_model.predict import predict_rental_price
+import config
 
 # Initialize logging
 logging.basicConfig(level=logging.INFO)
 
 # Initialize Firestore
-service_account_path = 'berkeley-housing-app-firebase-adminsdk-2oetp-5419402200.json'
+service_account_path = config.SERVICE_ACCOUNT_PATH
 if not firebase_admin._apps:
     cred = credentials.Certificate(service_account_path)
     firebase_admin.initialize_app(cred)
@@ -111,46 +113,90 @@ def retry_scrape_property(attempts=3, delay=5):
 # Function to be triggered
 @pubsub_fn.on_message_published(topic="property-update-topic")
 def scheduled_function(event: pubsub_fn.CloudEvent[pubsub_fn.MessagePublishedData]):
-    # Delete old Listings 
+    logging.info("Starting scheduled function at: %s", datetime.now())
     delete_old_listings()
 
-    # Scrape property data
     try:
         properties = retry_scrape_property()
     except Exception as e:
         logging.error(f"Failed to scrape properties after retries: {e}")
-        return  # or handle as needed
+        return
     
     logging.info(f"Number of properties: {len(properties)}")
 
-    # Loop through the properties and scrape additional details
     for index, row in properties.iterrows():
-        original_url = row['property_url']
+        try:
+            original_url = row['property_url']
+            encoded_url = encode_url_for_firestore(original_url)
 
-        encoded_url = encode_url_for_firestore(original_url)
+            # Get existing property data if it exists
+            existing_property = db.collection('properties').document(encoded_url).get()
+            property_data = existing_property.to_dict() if existing_property.exists else {}
+            
+            # Only update if no prediction exists or it failed
+            if not property_data.get('prediction_success'):
+                if not existing_property.exists:
+                    # New property - get all details
+                    street = row['street']
+                    city = row['city']
+                    state = row['state']
+                    zip_code = row['zip_code']
 
-        # Check if the property already exists in the database
-        existing_property = db.collection('properties').document(encoded_url).get()
-        if existing_property.exists:
-            logging.info(f"Property already exists: {original_url}")
-            continue  # Skip to the next property if this one already exists
-        
-        street = row['street']
-        city = row['city']
-        state = row['state']
-        zip_code = row['zip_code']
+                    detailed_url = construct_detailed_url(original_url, street, city, state, zip_code)
+                    if detailed_url:
+                        beds, baths, rent = scrape_additional_details(detailed_url)
+                    else:
+                        logging.warning(f"Skipped scraping additional details for: {original_url}")
+                        continue
 
-        beds, baths, rent = "N/A"
-    
-        detailed_url = construct_detailed_url(original_url, street, city, state, zip_code)
-        if detailed_url:
-            beds, baths, rent = scrape_additional_details(detailed_url)
-        else:
-            logging.warning(f"Skipped scraping additional details for: {original_url}")
+                    property_data = row.to_dict()
+                    property_data['list_date'] = string_to_date(property_data['list_date'])
+                    property_data.update({'beds': beds, 'baths': baths, 'rent': rent})
+
+                # Get ML prediction for new or existing property
+                try:
+                    beds = property_data.get('beds', 'N/A')
+                    baths = property_data.get('baths', 'N/A')
+                    
+                    prediction_input = {
+                        'beds': beds,
+                        'baths': float(baths.replace('N/A', '1')) if baths else 1.0,
+                        'latitude': property_data.get('latitude', 37.8715),
+                        'longitude': property_data.get('longitude', -122.2730),
+                        'neighborhood': 'Central Berkeley',
+                        'days_on_mls': property_data.get('days_on_mls', 0)
+                    }
+
+                    logging.info(f"Attempting prediction for property: {encoded_url}")
+                    logging.info(f"Prediction input: {prediction_input}")
+                    
+                    prediction_result = predict_rental_price(prediction_input)
+                    
+                    if prediction_result:
+                        logging.info(f"Prediction details for {encoded_url}: {prediction_result}")
+                        property_data.update({
+                            'predicted_rent': prediction_result['predicted_rent'],
+                            'rent_prediction_range_low': prediction_result['confidence_range'][0],
+                            'rent_prediction_range_high': prediction_result['confidence_range'][1],
+                            'model_version': prediction_result['model_version'],
+                            'prediction_success': True
+                        })
+                        logging.info(f"Prediction successful for property: {encoded_url}")
+                    else:
+                        property_data['prediction_success'] = False
+                        logging.warning(f"Prediction returned None for property: {encoded_url}")
+                        
+                except Exception as e:
+                    logging.error(f"Error predicting rent for property {encoded_url}: {e}")
+                    property_data['prediction_success'] = False
+
+                # Store updated property data
+                try:
+                    db.collection('properties').document(encoded_url).set(property_data)
+                    logging.info(f"Successfully stored property: {encoded_url}")
+                except Exception as e:
+                    logging.error(f"Failed to store property {encoded_url} in database: {e}")
+                    
+        except Exception as e:
+            logging.error(f"Error processing property at index {index}: {e}")
             continue
-
-        # Convert and upload data
-        property_data = row.to_dict()
-        property_data['list_date'] = string_to_date(property_data['list_date'])
-        property_data.update({'beds': beds, 'baths': baths, 'rent': rent})  # Update with scraped or default values
-        db.collection('properties').document(encoded_url).set(property_data)
