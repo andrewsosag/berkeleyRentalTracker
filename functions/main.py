@@ -3,7 +3,7 @@
 
 import firebase_admin
 from firebase_admin import credentials, firestore, initialize_app
-from firebase_functions import pubsub_fn
+from firebase_functions import https_fn, pubsub_fn
 import requests
 import re
 import logging
@@ -14,6 +14,60 @@ from datetime import datetime, timedelta
 import urllib.parse
 from ml_model.predict import predict_rental_price
 import config
+
+@https_fn.on_request()
+def test_predictions(req: https_fn.Request) -> https_fn.Response:
+    logging.info("Starting manual prediction update")
+    
+    try:
+        properties_ref = db.collection('properties').stream()
+        count = 0
+        success = 0
+        
+        for doc in properties_ref:
+            count += 1
+            property_data = doc.to_dict()
+            
+            # Force update all properties
+            try:
+                prediction_input = {
+                    'beds': property_data.get('beds', 'N/A'),
+                    'baths': property_data.get('baths', 'N/A'),
+                    'latitude': property_data.get('latitude', 37.8715),
+                    'longitude': property_data.get('longitude', -122.2730),
+                    'style': property_data.get('style', 'APARTMENT'),
+                    'zip_code': property_data.get('zip_code', '94704'),
+                    'days_on_mls': property_data.get('days_on_mls', 0)
+                }
+                
+                logging.info(f"Processing property: {doc.id}")
+                logging.info(f"Prediction input: {prediction_input}")
+                
+                prediction_result = predict_rental_price(prediction_input)
+                
+                if prediction_result:
+                    property_data.update({
+                        'predicted_rent': prediction_result['predicted_rent'],
+                        'rent_prediction_range_low': prediction_result['confidence_range'][0],
+                        'rent_prediction_range_high': prediction_result['confidence_range'][1],
+                        'model_version': prediction_result['model_version'],
+                        'prediction_quality': prediction_result.get('prediction_quality', 'medium'),
+                        'prediction_success': True
+                    })
+                    
+                    # Force update
+                    db.collection('properties').document(doc.id).set(property_data)
+                    logging.info(f"Updated property {doc.id}")
+                    success += 1
+                
+            except Exception as e:
+                logging.error(f"Error processing property {doc.id}: {e}")
+                
+        return https_fn.Response(f"Processing complete. Processed {count} properties, {success} successful predictions")
+        
+    except Exception as e:
+        logging.error(f"Error in test_predictions: {e}")
+        return https_fn.Response(f"Error: {str(e)}", status=500)
 
 # Initialize logging
 logging.basicConfig(level=logging.INFO)
